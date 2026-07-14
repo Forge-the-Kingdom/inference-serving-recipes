@@ -40,7 +40,7 @@ keeping many small chunks in flight across independent processes.
 
 - In-process multi-GPU, chunk 512: **52.4 t/s** prefill / 23.9 decode
 - **Distributed PP4, chunk 64: 170.4 t/s** prefill / 23.3 decode ← adopted
-- For reference, an llama.cpp IQ1_M path (with 8 expert layers on CPU) did ~97 / 14.6
+- For reference, an llama.cpp UD-IQ1_M path (with 8 expert layers on CPU) did ~97 / 14.6
 
 3.25× prefill over the in-process fork, ~1.6× decode over the CPU-offload llama.cpp baseline, and
 it's **entirely in VRAM** — nothing spilled to system RAM.

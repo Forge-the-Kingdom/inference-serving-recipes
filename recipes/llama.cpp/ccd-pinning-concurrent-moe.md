@@ -76,8 +76,8 @@ CUDA_VISIBLE_DEVICES=1 taskset -c 6-11,18-23 "$LLAMA_SERVER" \
   migrate onto the other CCD, so the two servers stop sharing an L3 slice. This is the single change
   that buys the 4.3×.
 - **`--threads 6`** — one thread per physical core of the CCD. Because the work is
-  bandwidth-bound, adding the SMT siblings (going to 12 threads) *reduces* throughput — it just
-  adds contention on the same 6 cores' bandwidth. Include the SMT logical IDs in the `taskset` mask
+  bandwidth-bound, adding more threads (the measured comparison was 6 vs 16) *reduces* throughput —
+  it just adds contention on the same cores' bandwidth. Include the SMT logical IDs in the `taskset` mask
   anyway so the OS keeps helper threads local.
 - **Tradeoff:** you're partitioning the CPU. Each server gets half the box. That's exactly what you
   want for two co-resident servers, but if you sometimes run only one, drop the pin and give it more
@@ -98,7 +98,7 @@ done; wait
 
 ## Results
 
-Two servers, concurrent load, measured 2026-06-04:
+Two servers, concurrent load, measured on the reference rig (2026-06):
 
 | Config | Server A (122B MoE) | Server B (35B MoE) |
 |---|---:|---:|
@@ -108,7 +108,7 @@ Two servers, concurrent load, measured 2026-06-04:
 Pinning **both** servers (B → `6-11,18-23`) closes B's gap too. Solo baselines: A ≈ 26.9 t/s,
 B ≈ 135 t/s.
 
-**Bonus finding:** solo decode is *slightly faster* at 6 threads than at 16 (26.9 vs 25.5 t/s) —
+**Bonus finding:** solo decode is *slightly faster* at 6 threads than at 16 (26.9 vs 25.5–25.8 t/s) —
 fewer threads = less intra-process contention on the same L3. On a bandwidth-bound workload, more
 threads is not more speed.
 

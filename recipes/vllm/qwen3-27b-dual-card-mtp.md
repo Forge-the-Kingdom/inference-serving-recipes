@@ -2,7 +2,7 @@
 
 > **Result (measured):** A 27B model tensor-paralleled across two RTX 3090s, with the checkpoint's
 > **MTP (multi-token-prediction) head** driving speculative decode at n=3 and an FP8 (e4m3) KV
-> cache, decodes at **79 → 60 t/s from 0 → 146K context fill** — about **2.6× the no-MTP
+> cache, decodes at **79 → 60 t/s from 0 → 146K context fill** — about **2.6–2.7× the no-MTP
 > baseline at every depth**, and the curve stays flat as context grows. Plus the one trap that
 > will OOM you mid-prefill if you don't know it.
 
@@ -19,41 +19,50 @@ prompt.
 
 | Component | Configuration |
 |---|---|
-| GPU | 2× RTX 3090 (24 GB each, Ampere), tensor-parallel |
+| GPU | 2× RTX 3090 24 GB, Ampere, tensor-parallel (measured on a 3090 Ti + a 3090 — both 24 GB, decode-neutral) |
 | GPU topology | one x16 + one x4 — decode-neutral at TP=2 (see note) |
 | CPU | AMD Ryzen 9 9900X |
 | OS / driver | Linux, NVIDIA 5xx, CUDA 12.x |
 
 ## Model and runtime
 
+This recipe's launch block and all depth-sweep numbers are the **INT8 (AutoRound)** build — it's
+portable (no engine patches) and it's what the measured curve below came from. A parallel **NVFP4**
+build of the same 27B is noted as a variant where it differs.
+
 - Model: a Qwen3.6-27B checkpoint that **ships an MTP head** (vLLM auto-discovers it from the
-  model directory — e.g. a `model_extra_tensors.safetensors` alongside the weights). Measured on
-  both an INT8 (AutoRound) and an NVFP4 build of the same 27B.
+  model directory — e.g. a `model_extra_tensors.safetensors` alongside the weights).
 - Runtime: **vLLM 0.22.1**.
 - Context: 151,552 per slot.
-- Concurrency: up to 3 concurrent 151K slots on the NVFP4 build (lighter weights → more KV pool).
+- Concurrency: the INT8 pool is sized **single-stream** (`--max-num-seqs 1`, context-over-concurrency);
+  the lighter NVFP4 build fit **3× 151K** concurrent slots in the same pool.
 - KV cache: FP8 (e4m3).
 - `kv_heads = 4` on this checkpoint, so **TP must divide 4** — TP=2 or TP=4 only, never 3.
 
 ## Launch
 
+INT8 (AutoRound) build — the measured config:
+
 ```bash
 export VLLM="/path/to/venv/bin/vllm"
-export MODEL_PATH="/path/to/qwen3.6-27b"          # dir containing weights + the MTP head tensors
-export PATH="$(dirname "$VLLM"):$PATH"            # ninja for Marlin/inductor JIT
+export MODEL_PATH="/path/to/qwen3.6-27b-int8"     # dir containing weights + the MTP head tensors
+export PATH="$(dirname "$VLLM"):$PATH"            # ninja on PATH for inductor JIT
 
 export CUDA_VISIBLE_DEVICES=0,1                    # the two 3090s
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
+export VLLM_ATTENTION_BACKEND=FLASHINFER           # the e4m3-KV decode path — load-bearing (see below)
+export VLLM_USE_FLASHINFER_SAMPLER=1
 export NCCL_P2P_DISABLE=1                          # no NVLink; disable P2P probing
 
 "$VLLM" serve "$MODEL_PATH" \
   --host 127.0.0.1 --port 8000 \
+  --quantization auto_round --dtype float16 \
   --tensor-parallel-size 2 --disable-custom-all-reduce \
   --max-model-len 151552 \
-  --gpu-memory-utilization 0.90 \
-  --max-num-seqs 3 \
+  --gpu-memory-utilization 0.93 \
+  --max-num-seqs 1 \
   --max-num-batched-tokens 2048 \
   --kv-cache-dtype fp8 \
   --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
@@ -63,6 +72,18 @@ export NCCL_P2P_DISABLE=1                          # no NVLink; disable P2P prob
   --trust-remote-code
 ```
 
+**NVFP4 variant of the same 27B** — differs in four places: (1) drop `--kv-cache-dtype fp8` (an NVFP4
+checkpoint declares FP8 KV and vLLM auto-selects e4m3); (2) use `--quantization modelopt` instead of
+`auto_round`; (3) **also drop `VLLM_ATTENTION_BACKEND=FLASHINFER`** — the FlashInfer choice above is
+specific to the INT8-KV decode path and was not benched on NVFP4, so leave the backend at default
+(keep `VLLM_USE_FLASHINFER_SAMPLER=1`); (4) it fits `--gpu-memory-utilization 0.90 --max-num-seqs 3`.
+Note that some NVFP4 builds that quantize `lm_head` needed extra vLLM patches on versions < 0.24.0 —
+prefer ≥ 0.24.0 (see the [Ampere FP8/NVFP4 recipe](ampere-fp8-nvfp4-marlin.md)).
+
+> The reference INT8 launcher also passes `--compilation-config
+> '{"cudagraph_mode":"PIECEWISE","cudagraph_capture_sizes":[1,2,4,8]}'` — omitted above for
+> portability, but it was part of the exact build that produced the measured 79→60 curve.
+
 ## Why these settings
 
 - **`--speculative-config '{"method":"mtp","num_speculative_tokens":3}'`** — the whole point. Uses
@@ -71,15 +92,19 @@ export NCCL_P2P_DISABLE=1                          # no NVLink; disable P2P prob
   indistinguishable from a plain baseline. n=3 was the sweet spot in testing.
 - **`--mamba-cache-mode align`** — required alongside MTP for this architecture's cache layout.
   Stable with prefix caching on.
-- **`--kv-cache-dtype fp8`** (e4m3) — halves KV footprint so 151K context is affordable. TTFT tax
-  measured at ~+10% (not the 2× some reports claim). **Not** `fp8_e5m2` against FP8-quantized
-  weights.
-- **`--gpu-memory-utilization 0.90`** — **the trap, see below.** With MTP on 24 GB cards, do **not**
-  exceed **0.93**.
+- **`--kv-cache-dtype fp8` (e4m3) + `VLLM_ATTENTION_BACKEND=FLASHINFER`** — a pair, not two separate
+  choices. FP8 KV halves the KV footprint so 151K context is affordable; the FlashInfer backend is
+  what keeps e4m3-KV decode **flat with depth** (the 79→60 curve). Without FlashInfer this
+  checkpoint's KV decode collapses as context grows. TTFT tax ~+10% (not the 2× some reports claim).
+  **Not** `fp8_e5m2` against an FP8-quantized checkpoint.
+- **`--gpu-memory-utilization 0.93`** — the ceiling. **The trap, see below** — with MTP on 24 GB
+  cards, do **not** exceed 0.93.
+- **`--quantization auto_round --dtype float16`** — for the INT8 AutoRound build. (The NVFP4 variant
+  uses `--quantization modelopt` and omits the KV-dtype flag; see the variant note above.)
 - **`--tensor-parallel-size 2 --disable-custom-all-reduce`** — TP=2 fits the model with long-context
-  headroom. Disable the custom all-reduce on a no-NVLink pair.
-- **`--max-num-seqs 3`** — how many concurrent 151K slots the KV pool holds (build-dependent;
-  lighter quants fit more).
+  headroom. Disable the custom all-reduce on a no-NVLink pair (paired with `NCCL_P2P_DISABLE=1`).
+- **`--max-num-seqs 1`** — context-over-concurrency: the INT8 pool is spent entirely on one deep
+  151K stream. How many 151K slots a build can hold is weight-dependent — the lighter NVFP4 build fit 3.
 - **Tradeoff:** MTP's speedup is real but **acceptance is workload-dependent** — see results.
 
 ## ⚠ The trap: MTP's activation peak is invisible to startup profiling

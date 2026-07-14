@@ -134,7 +134,7 @@ DeepSeek-V4-Flash IQ2XXS, 4× RTX 3090, 96K ctx, fully GPU-resident. 4096-token 
 
 | Engine configuration | Prefill t/s | Decode t/s |
 |---|---:|---:|
-| llama.cpp IQ1_M, 8 expert layers on CPU (`-ot`) — older baseline | ~97 | 14.6 |
+| llama.cpp UD-IQ1_M, 8 expert layers on CPU (`-ot`) — older baseline | ~97 | 14.6 |
 | DwarfStar in-process multi-GPU, chunk 512 | 52.4 | 23.9 |
 | DwarfStar in-process multi-GPU, chunk 1024 | 51.4 | 24.0 |
 | **DwarfStar distributed PP4, chunk 64 (adopted)** | **170.4** | **23.3** |

@@ -22,7 +22,7 @@ work, not the VRAM footprint or the decode bandwidth advantage.
 | CPU | AMD Ryzen 9 9900X |
 | OS / driver | Linux, NVIDIA 5xx, CUDA 12.x |
 
-Any Ampere card (SM80/SM86/SM89-and-below-native-FP8) benefits. The version gates below are what
+Any Ampere card (SM80 / SM86 — no native FP8 or FP4 compute) benefits. The version gates below
 matter more than the exact card.
 
 ## Model and runtime
@@ -94,11 +94,17 @@ Whether a quant serves depends on its **minimum-capability gate** in your vLLM v
 The last two are what block many ModelOpt-quantized large checkpoints on Ampere — the **kernels
 work**, the gate is just set to 89.
 
-> **The good news:** those two 89-gates were fixed upstream. The identical two-line relaxation
-> (min-capability 89 → 80, plus a missing `orig_dtype` attribute the Marlin fallback reads) landed
-> in **vLLM v0.24.0** (mid-2026), and a follow-up extended the mixed gate down to SM75. **So the
-> clean fix is: upgrade to vLLM ≥ 0.24.0** and these ModelOpt paths serve on Ampere with no local
-> patching. Only older venvs need a manual gate edit.
+> **The good news (partial):** the **`modelopt_mixed`** 89-gate was fixed upstream. A two-line
+> relaxation (min-capability 89 → 80, plus a missing `orig_dtype` attribute the Marlin fallback
+> reads) landed in **vLLM v0.24.0** (mid-2026), and a follow-up extended the mixed gate down to
+> SM75. So for **mixed-precision** ModelOpt checkpoints, upgrading to **vLLM ≥ 0.24.0** serves them
+> on Ampere with no local patching.
+>
+> **Still blocked:** the **pure `modelopt` FP8** path's `get_min_capability` was **still 89** as of
+> mid-2026 — no upstream PR tracked it — so a straight ModelOpt-FP8 checkpoint may still hit the gate
+> even on 0.24.0. If you need it, the fix is a one-line local gate edit (89 → 80) in
+> `vllm/model_executor/layers/quantization/modelopt.py`; re-check upstream first in case it's since
+> landed.
 
 ## Validation
 
@@ -121,8 +127,9 @@ Single RTX 3090, single-stream decode, eager mode, measured 2026-07-07:
 | Qwen3-1.7B-FP8 | FP8 | 183 | `MarlinFP8ScaledMMLinearKernel` |
 
 These are small models chosen to *prove the path*, not to benchmark a flagship — the point is that
-FP8/NVFP4 **serve at all** on Ampere, at native-decode-competitive speed. Larger ModelOpt
-checkpoints serve the same way once past the 89-gate (upgrade to ≥0.24.0).
+FP8/NVFP4 **serve at all** on Ampere, at native-decode-competitive speed. Larger **mixed-precision**
+ModelOpt checkpoints serve the same way once past the gate (upgrade to ≥ 0.24.0); a pure
+ModelOpt-FP8 large checkpoint may still need the one-line gate edit noted above.
 
 ## Known limits
 
@@ -131,14 +138,17 @@ checkpoints serve the same way once past the 89-gate (upgrade to ≥0.24.0).
 - **KV-cache dtype:** with FP8-quantized checkpoints, request FP8 KV as `fp8` (e4m3), **not**
   `fp8_e5m2` — the latter errors against these checkpoints.
 - **ModelOpt FP8 (pure `modelopt` path)** still carried an 89-gate as of mid-2026 even after the
-  mixed-precision fix; if you hit it, upgrade vLLM and re-check.
+  mixed-precision fix — upgrading vLLM alone does **not** clear it. If you hit it, apply the one-line
+  gate edit (89 → 80) in `modelopt.py` (and re-check upstream in case a later release lowered it).
 
 ## Troubleshooting
 
 - **Symptom:** engine dies at startup with `FileNotFoundError: 'ninja'`.
   **Cause/fix:** put the venv's `bin` on `PATH` so `ninja` resolves (Marlin JIT needs it).
 - **Symptom:** quant rejected — "not supported on this device / capability".
-  **Cause/fix:** you hit an 89-gate (`modelopt` / `modelopt_mixed`). Upgrade to vLLM ≥ 0.24.0.
+  **Cause/fix:** you hit an 89-gate. For **`modelopt_mixed`**, upgrade to vLLM ≥ 0.24.0 (fixed there).
+  For **pure `modelopt` FP8**, the gate was still 89 as of mid-2026 even on 0.24.0 — apply the one-line
+  gate edit (89 → 80) in `modelopt.py`, and re-check upstream first.
 - **Symptom:** launching vLLM at high util next to an already-running server crashes the *other*
   server.
   **Cause/fix:** co-tenancy hazard — a runtime CUDA alloc under memory pressure can abort a neighbor
@@ -151,6 +161,7 @@ checkpoints serve the same way once past the 89-gate (upgrade to ≥0.24.0).
 
 - Engine: [vLLM](https://github.com/vllm-project/vllm) — Marlin weight-only FP8/FP4 kernels; the
   FP8-via-Marlin weight-only path shipped in an upstream PR merged early 2026; the SM89→SM80
-  ModelOpt gate relaxation landed in v0.24.0.
+  relaxation of the **mixed-precision** ModelOpt gate landed in v0.24.0 (pure ModelOpt FP8 remained
+  gated).
 - Models: `llmat/Qwen3-4B-Instruct-2507-NVFP4`, `Qwen/Qwen3-1.7B-FP8`.
 - Measured on the reference RTX 3090 rig, 2026-07.
