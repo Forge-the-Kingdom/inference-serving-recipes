@@ -45,6 +45,12 @@ The x1 link and the split-CCD CPU are not accidents — a couple of these recipe
   MTP n=3 + FP8 (e4m3) KV cache on a two-3090 tensor-parallel pair. **~2.6× decode**, flat
   to deep context, plus the memory-profiling trap that OOMs you mid-prefill.
 
+### DwarfStar (`antirez/ds4`)
+- [DeepSeek-V4-Flash IQ2, fully GPU-resident on 4× 3090](recipes/dwarfstar/deepseek-v4-iq2-4x3090-gpu-resident.md)
+  — an ~80.7 GiB IQ2 checkpoint entirely in VRAM across four cards, **no CPU offload**. Served as a
+  **distributed 4-process pipeline** (not a naive in-process layer split), prefill jumps **3.25×**
+  on a no-NVLink box: **170 t/s prefill / 23 t/s decode** at 96K context.
+
 ## Conventions
 
 - Model and binary paths are environment variables (`$MODEL_PATH`, `$LLAMA_SERVER`, `$VLLM`).
