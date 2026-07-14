@@ -1,0 +1,5 @@
+# local scratch / notes
+*.local.md
+STATE.local.md
+.DS_Store
+scratch/
