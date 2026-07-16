@@ -36,6 +36,14 @@ The x1 link and the split-CCD CPU are not accidents — a couple of these recipe
 - [CCD pinning for concurrent MoE offload](recipes/llama.cpp/ccd-pinning-concurrent-moe.md) —
   on a multi-CCD Ryzen, pin each server to one CCD. Recovers **4.3× concurrent decode**
   (5.8 → 25.2 t/s) with `taskset` and `--threads`, zero cost.
+- [Gemma-4-31B (hybrid SWA) on two 24 GB cards](recipes/llama.cpp/gemma4-31b-hybrid-swa-2card.md) —
+  a dense 31B multimodal reasoner at **256K context + MTP + vision** (or 2 seats × 200K) on two
+  3090s. Sliding-window attention means only 10 of 60 layers grow KV, so q8_0 KV stays cheap at
+  depth. MTP: **79% draft-accept, +17% decode**.
+- [Ornith-1.0-35B (Qwen3.5 hybrid MoE) at Q8, 2 seats](recipes/llama.cpp/ornith-35b-qwen3-5-moe-2card.md)
+  — a 35B agentic-coding MoE at **Q8_0 with two concurrent 96K seats** in **~38 GB / 48**. 30 of 40
+  layers are linear-attention (no growing KV), so Q8 fits with ~10 GB to spare — no need to drop to
+  Q6. **70–105 t/s** (A3B), tool-calling verified.
 
 ### vLLM
 - [Serving FP8 / NVFP4 checkpoints on Ampere](recipes/vllm/ampere-fp8-nvfp4-marlin.md) —
